@@ -12,11 +12,17 @@ fn main() -> io::Result<()> {
         if proto != IPV4_PROTO {
             continue;
         }
+
         let data = &buffer[4..read_len];
         let data_len = read_len - 4;
+        let packet = match etherparse::Ipv4HeaderSlice::from_slice(data) {
+            Ok(packet) => packet,
+            Err(_) => continue,
+        };
+
         println!(
-            "read {} bytes (flags: {:x}, proto: {:x}): {:x?}",
-            data_len, flags, proto, data
+            "read {} bytes (flags: {:x}, proto: {:x}): {:?}",
+            data_len, flags, proto, packet
         );
     }
 }

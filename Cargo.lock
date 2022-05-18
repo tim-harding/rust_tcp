@@ -106,6 +106,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "etherparse"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9feedaea5a9f602932e78b512b2fde69aaefd2ef4fd5fd744238f7424b246186"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -356,6 +362,7 @@ dependencies = [
 name = "tcp"
 version = "0.1.0"
 dependencies = [
+ "etherparse",
  "tun-tap",
 ]
 
