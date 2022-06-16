@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 tun-tap = "*"
 etherparse = "*"
+thiserror = "1.0"

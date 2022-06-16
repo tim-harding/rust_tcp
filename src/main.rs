@@ -1,9 +1,20 @@
-use etherparse::{IpNumber, Ipv4HeaderSlice, TcpHeaderSlice};
-use std::{collections::HashMap, io, net::Ipv4Addr};
+use etherparse::{IpHeader, IpNumber, Ipv4HeaderSlice, TcpHeaderSlice};
+use std::{collections::{HashMap, hash_map::Entry}, io, net::Ipv4Addr};
+use tcp::{Connection, StateError};
+use thiserror::Error;
+use tun_tap::Iface;
 
 mod tcp;
 
 const IPV4_PROTO: u16 = 0x0800;
+
+#[derive(Debug, Error)]
+enum MainError {
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    #[error("{0}")]
+    State(#[from] StateError),
+}
 
 #[derive(Debug, Hash, Clone, Copy, Eq, PartialEq)]
 struct Quad {
@@ -11,9 +22,9 @@ struct Quad {
     dst: (Ipv4Addr, u16),
 }
 
-fn main() -> io::Result<()> {
-    let mut connections: HashMap<Quad, tcp::State> = Default::default();
-    let nic = tun_tap::Iface::new("tun0", tun_tap::Mode::Tun)?;
+fn main() -> Result<(), MainError> {
+    let mut connections: HashMap<Quad, tcp::Connection> = Default::default();
+    let mut nic = Iface::new("tun0", tun_tap::Mode::Tun)?;
     let mut buffer = [0u8; 1504];
     loop {
         let read_length = nic.recv(&mut buffer)?;
@@ -46,12 +57,27 @@ fn main() -> io::Result<()> {
         };
 
         let buffer = &buffer[tcp_header.slice().len()..];
-        connections
-            .entry(Quad {
-                src: (ip_header.source_addr(), tcp_header.source_port()),
-                dst: (ip_header.destination_addr(), tcp_header.destination_port()),
-            })
-            .or_default()
-            .on_packet(ip_header, tcp_header, buffer);
+        match connections.entry(Quad {
+            src: (ip_header.source_addr(), tcp_header.source_port()),
+            dst: (ip_header.destination_addr(), tcp_header.destination_port()),
+        }) {
+            Entry::Occupied(mut entry) => {
+                match entry
+                    .get_mut()
+                    .on_packet(&mut nic, ip_header, tcp_header, buffer)
+                {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+            Entry::Vacant(entry) => {
+                match Connection::accept(&mut nic, ip_header, tcp_header, buffer) {
+                    Ok(connection) => {
+                        entry.insert(connection);
+                    }
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+        }
     }
 }
