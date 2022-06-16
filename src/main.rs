@@ -17,12 +17,18 @@ fn main() -> io::Result<()> {
         let data_len = read_len - 4;
         let packet = match etherparse::Ipv4HeaderSlice::from_slice(data) {
             Ok(packet) => packet,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("Ignoring weird packet: {}", e);
+                continue;
+            }
         };
 
         println!(
-            "read {} bytes (flags: {:x}, proto: {:x}): {:?}",
-            data_len, flags, proto, packet
+            "payload_len: {}, protocol: {}, source_addr: {}, destination_addr: {}",
+            packet.payload_len(),
+            packet.protocol(),
+            packet.source_addr(),
+            packet.destination_addr()
         );
     }
 }
