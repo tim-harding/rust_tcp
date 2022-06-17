@@ -5,8 +5,6 @@ use std::io;
 use thiserror::Error;
 use tun_tap::Iface;
 
-use crate::tcp;
-
 #[derive(Debug, Error)]
 pub enum StateError {
     #[error("{0}")]
@@ -22,22 +20,15 @@ pub enum StateError {
 }
 
 pub enum State {
-    Closed,
-    Listen,
     SynReceived,
     Established,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        State::Listen
-    }
 }
 
 pub struct Connection {
     state: State,
     send: SendSequenceSpace,
     receive: ReceiveSequenceSpace,
+    ip_header: Ipv4Header,
 }
 
 #[derive(Default)]
@@ -80,35 +71,24 @@ impl Connection {
         }
 
         let initial_sequence = 0;
+        let window = 10;
 
-        let connection = Connection {
-            state: State::SynReceived,
-            send: SendSequenceSpace {
-                initial_sequence: initial_sequence,
-                unacknowledged: initial_sequence,
-                next: initial_sequence + 1,
-                window: 10,
-                urgent: false,
-                last_window_update_sequence: 0, // Not yet sure what these should be
-                last_window_update_acknowledgement: 0,
-            },
-            receive: ReceiveSequenceSpace {
-                initial_sequence: tcp_header.sequence_number(),
-                next: tcp_header.sequence_number() + 1,
-                window: tcp_header.window_size(),
-                urgent: false,
-            },
+        let receive = ReceiveSequenceSpace {
+            initial_sequence: tcp_header.sequence_number(),
+            next: tcp_header.sequence_number() + 1,
+            window: tcp_header.window_size(),
+            urgent: false,
         };
 
         // Started establishing a connection
         let mut syn_ack = TcpHeader::new(
             tcp_header.destination_port(),
             tcp_header.source_port(),
-            connection.send.initial_sequence, // Should be random eventually
-            connection.send.window,           // Some window size
+            initial_sequence, // Should be random eventually
+            window,           // Some window size
         );
         // The next thing we expect is the next byte of the sequence
-        syn_ack.acknowledgment_number = connection.receive.next;
+        syn_ack.acknowledgment_number = receive.next;
         // Acknowledging their sync request
         syn_ack.ack = true;
         // We're including a sync request as well
@@ -125,12 +105,27 @@ impl Connection {
         ip.header_checksum = ip.calc_header_checksum()?;
         syn_ack.checksum = syn_ack.calc_checksum_ipv4(&ip, &[])?;
 
+        let connection = Connection {
+            state: State::SynReceived,
+            send: SendSequenceSpace {
+                initial_sequence: initial_sequence,
+                unacknowledged: initial_sequence,
+                next: initial_sequence + 1,
+                window: 10,
+                urgent: false,
+                last_window_update_sequence: 0, // Not yet sure what these should be
+                last_window_update_acknowledgement: 0,
+            },
+            receive,
+            ip_header: ip,
+        };
+
         // How much space is remaining in the buffer after writing both of our headers?
         let mut buffer = [0u8; 1500];
         let written = {
             let buffer_len = buffer.len();
             let mut unwritten = &mut buffer[..];
-            ip.write(&mut unwritten)?;
+            connection.ip_header.write(&mut unwritten)?;
             syn_ack.write(&mut unwritten)?;
             buffer_len - unwritten.len()
         };
@@ -148,10 +143,11 @@ impl Connection {
         _data: &[u8],
     ) -> Result<(), StateError> {
         match self.state {
-            State::Closed => Ok(()),
-            State::Listen => Ok(()),
-            State::SynReceived => Ok(()),
-            State::Established => Ok(()),
+            State::SynReceived => {
+                // Expect to get an ACK for our SYN
+                Ok(())
+            }
+            State::Established => todo!(),
         }
     }
 }
