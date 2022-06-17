@@ -14,7 +14,9 @@ pub enum StateError {
     #[error("Expected a SYN packet")]
     ExpectedSynPacket,
     #[error("{0}")]
-    Checksum(#[from] ValueError),
+    Header(#[from] ValueError),
+    #[error("UNA < ACK <= NXT did not hold")]
+    AcknowledgmentCheck,
     #[error("Unspecified error")]
     Other,
 }
@@ -95,12 +97,16 @@ impl Connection {
         syn_ack.syn = true;
 
         let mut ip = Ipv4Header::new(
-            syn_ack.header_len(),
+            0,
             30,
             IpNumber::Tcp,
             ip_header.destination(),
             ip_header.source(),
         );
+
+        // This needs to be done for each packet,
+        // so we set this outside the constructor to avoid confusion.
+        ip.set_payload_len(syn_ack.header_len() as usize)?;
 
         ip.header_checksum = ip.calc_header_checksum()?;
         syn_ack.checksum = syn_ack.calc_checksum_ipv4(&ip, &[])?;
@@ -120,7 +126,6 @@ impl Connection {
             ip_header: ip,
         };
 
-        // How much space is remaining in the buffer after writing both of our headers?
         let mut buffer = [0u8; 1500];
         let written = {
             let buffer_len = buffer.len();
@@ -137,14 +142,51 @@ impl Connection {
 
     pub fn on_packet(
         &mut self,
-        _nic: &mut Iface,
-        _ip_header: Ipv4HeaderSlice,
-        _tcp_header: TcpHeaderSlice,
-        _data: &[u8],
+        nic: &mut Iface,
+        ip_header: Ipv4HeaderSlice,
+        tcp_header: TcpHeaderSlice,
+        data: &[u8],
     ) -> Result<(), StateError> {
+        // Check that the ACK is acceptable:
+        // SND.UNA < SEG.ACK <= SND.NXT
+        // using arithmetic mod 2^32
+        let ack = tcp_header.acknowledgment_number();
+        let una = self.send.unacknowledged;
+        let nxt = self.send.next;
+        if una < ack {
+            if ack <= nxt {
+                // No wrapping
+                // una < ack <= nxt
+            } else {
+                // una < ack, ack > nxt
+                // nxt may have wrapped.
+                // (una ack nxt) -> (nxt una ack) is fine
+                // (una ack nxt) -> (una nxt ack) is wrong
+
+                // (nxt = una) does not work because (una < ack <= nxt => una != nxt)
+                if nxt >= una {
+                    Err(StateError::AcknowledgmentCheck)?
+                }
+            }
+        } else if ack < una {
+            // (una ack nxt) -> (ack nxt una) is fine
+            // (una ack nxt) -> (ack una nxt) is wrong
+            // (una ack nxt) -> (nxt ack una) is wrong
+
+            // (nxt = una) does not work because (una < ack <= nxt => una != nxt)
+            // However, (nxt = ack) does work
+            if !(nxt < una && nxt >= ack) {
+                Err(StateError::AcknowledgmentCheck)?
+            }
+        } else {
+            // una = ack
+            Err(StateError::AcknowledgmentCheck)?
+        }
+
         match self.state {
             State::SynReceived => {
                 // Expect to get an ACK for our SYN
+
                 Ok(())
             }
             State::Established => todo!(),
