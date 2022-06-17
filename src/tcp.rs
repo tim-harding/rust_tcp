@@ -1,4 +1,6 @@
-use etherparse::{IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice, WriteError};
+use etherparse::{
+    IpNumber, Ipv4Header, Ipv4HeaderSlice, TcpHeader, TcpHeaderSlice, ValueError, WriteError,
+};
 use std::io;
 use thiserror::Error;
 use tun_tap::Iface;
@@ -13,6 +15,8 @@ pub enum StateError {
     Etherparse(#[from] WriteError),
     #[error("Expected a SYN packet")]
     ExpectedSynPacket,
+    #[error("{0}")]
+    Checksum(#[from] ValueError),
     #[error("Unspecified error")]
     Other,
 }
@@ -97,23 +101,20 @@ impl Connection {
         };
 
         // Started establishing a connection
-        let syn_ack = {
-            let mut syn_ack = TcpHeader::new(
-                tcp_header.destination_port(),
-                tcp_header.source_port(),
-                connection.send.initial_sequence, // Should be random eventually
-                connection.send.window,           // Some window size
-            );
-            // The next thing we expect is the next byte of the sequence
-            syn_ack.acknowledgment_number = connection.receive.next;
-            // Acknowledging their sync request
-            syn_ack.ack = true;
-            // We're including a sync request as well
-            syn_ack.syn = true;
-            syn_ack
-        };
+        let mut syn_ack = TcpHeader::new(
+            tcp_header.destination_port(),
+            tcp_header.source_port(),
+            connection.send.initial_sequence, // Should be random eventually
+            connection.send.window,           // Some window size
+        );
+        // The next thing we expect is the next byte of the sequence
+        syn_ack.acknowledgment_number = connection.receive.next;
+        // Acknowledging their sync request
+        syn_ack.ack = true;
+        // We're including a sync request as well
+        syn_ack.syn = true;
 
-        let ip = Ipv4Header::new(
+        let mut ip = Ipv4Header::new(
             syn_ack.header_len(),
             30,
             IpNumber::Tcp,
@@ -121,15 +122,21 @@ impl Connection {
             ip_header.source(),
         );
 
+        ip.header_checksum = ip.calc_header_checksum()?;
+        syn_ack.checksum = syn_ack.calc_checksum_ipv4(&ip, &[])?;
+
         // How much space is remaining in the buffer after writing both of our headers?
         let mut buffer = [0u8; 1500];
-        let unwritten = {
+        let written = {
+            let buffer_len = buffer.len();
             let mut unwritten = &mut buffer[..];
             ip.write(&mut unwritten)?;
             syn_ack.write(&mut unwritten)?;
-            unwritten.len()
+            buffer_len - unwritten.len()
         };
-        nic.send(&buffer[..unwritten])?;
+
+        let buffer = &buffer[..written];
+        nic.send(buffer)?;
         Ok(connection)
     }
 
